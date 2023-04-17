@@ -1,0 +1,901 @@
+---
+title: "Dissertation - Data Analysis"
+author: "Albatool"
+date: "2/14/2023"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r}
+#install and load required packages
+require(tidyverse)
+require(readr)
+library(dplyr)
+library(tidytext)
+require(psych)
+require(lavaan)
+require(semPlot)
+library(kableExtra)
+```
+
+```{r}
+#set seed to stablise bootstrap from computer clock 
+#initial_seed = Sys.time()
+#initial_seed=as.integer(initial_seed)
+#print (initial_seed)
+# take the last five digits of the initial seed
+#the_seed=initial_seed %% 100000
+#print(the_seed) #18144
+set.seed(18144)
+
+```
+
+
+```{r}
+#Reading the raw data file
+#code line was deleted to preserve anonymity
+
+```
+
+# Data cleaning and preparing the data
+```{r}
+# data cleaning
+
+#remove irrelevant columns 
+
+clean_df <- numeric_df[,-c(1:6, 8:17, 47:50, 54:57, 61:64, 68:71, 75:78, 82:85, 89:92, 96:99, 103:106, 110:113, 117:120, 124:127, 131:134, 138:141, 145:148, 152:155, 159:162, 166:169, 173:176, 180:183, 187:190, 194:197, 201:204, 208:211, 215:218, 222:225, 229:232, 236:239, 243:246, 250:253, 278)]
+
+#make first row the column names
+colnames(clean_df) <- clean_df[1,] 
+clean_df <- clean_df[-c(1,2), ]
+
+#remove incomplete responses based on column "Finished" where 0=FALSE
+summary(clean_df$Finished==0) #415 didn't complete study, 339 completed it
+clean_df <- clean_df[!(clean_df$Finished==0),]
+clean_df <- clean_df[,-1] #removing "Finished" columns after cleaning
+
+
+
+#assigning unique ID number to each participant/row
+clean_df <- dplyr::mutate(clean_df, ID = row_number())
+clean_df <- clean_df %>% mutate(ID = factor(ID))
+clean_df <- clean_df %>%
+  relocate(ID)
+
+```
+
+
+```{r}
+# data exclusions
+
+#check if participants reported diagnosis with schizophrenia - if yes, exclude
+clean_df[clean_df$`Have you been previously diagnosed with a neurological condition? - Yes (please specify if you feel comfortable sharing) - Text`%in% c('schizophrenia','Schizophrenia', 'Yes, schizophrenia')] 
+
+clean_df[clean_df$`Have you been clinically diagnosed with a mental health condition? - Yes (please specify if you feel comfortable sharing) - Text`%in% c('schizophrenia','Schizophrenia', 'Yes, schizophrenia')] 
+
+#also double-checked with manual search through df
+
+  #no ppt reported diagnosis with schizophrenia. Through manual search found 1 ppt who reported schizoid diagnosis which will be excluded (ID #302)
+
+#exclude schizoid case
+clean_df <- clean_df[!(clean_df$ID==302),]
+
+#acquired aphantasia 
+clean_df[clean_df[,14] == '1',] #3 ppts indicated that their lack of visual mental imagery is acquired
+summary(clean_df$`Was your difficulty with visual mental imagery (aphantasia) the result of a brain injury?`=='1') #just another way to check
+clean_df <- clean_df[-c(30,124,191),] #removing ppts who answered yes by their unique id
+
+  #NB: Q asked if aphantasia was acquired due to brain injury but aphantasia can be acquired with psychopathology; not very accurate formulation.
+
+```
+
+
+```{r}
+# categorise aphantasia and phantasia groups based on VVIQ scoring
+
+#sum score across rows for columns 15-30 and save score into new column (a score per ppt)
+vviq <- clean_df %>% select(., c(15:30)) 
+vviq <- sapply(vviq, as.numeric)
+vviq <- as.data.frame(vviq)
+vviq <- cbind(vviq, clean_df$ID)
+vviq <- vviq %>% mutate(vviq_score = rowSums(across(.cols=c(1:16))))
+
+#classify group based on scores
+  #aphantasia = 75-80
+  #phantasia = 24-74
+  #hyperphantasia = 16-23
+
+condition <- list()
+score <- vviq$vviq_score
+
+for(i in score) {
+  if(i >=75){
+    condition <- append(condition, 'aphantasia')
+  } else if(i <= 23){
+    condition <- append(condition, 'hyperphantasia')
+  } else{
+    condition <- append(condition, 'phantasia')
+  }
+}
+
+#add group condition to dataset
+condition<- as.factor(as.character(condition))
+new_df <- clean_df %>% mutate(group = condition)
+class(new_df$group)
+
+#adding each ppts' vviq scores to df
+new_df <- cbind(new_df, vviq$vviq_score)
+new_df <- new_df %>% rename(vviq_score = `vviq$vviq_score`)
+
+#check how many hyperphantasics
+summary(new_df$group) #29 hyperphantasia
+
+#exclude hyperphantasia condition
+new_df<- new_df[new_df$group != 'hyperphantasia', ]
+summary(new_df$group) #double-checking
+
+#dummy code
+new_df$condition <- ifelse(new_df$group == 'phantasia', 0, 1)
+new_df <- new_df %>% mutate(condition=factor(condition))
+levels(new_df$condition)
+class(new_df$condition)
+
+
+
+
+```
+
+
+
+```{r}
+# coding variables
+
+#dummy code gender
+new_df <- new_df %>% mutate(Gender=factor(Gender))
+summary(new_df$Gender)
+
+#if we were to exclude non-binary/third gender (14 ppts) and prefer not to say (3 ppts) - not enough data? - exclude and justify in write up but indicate original amount and how many were excluded
+
+new_df <- new_df[new_df$Gender=='1' | new_df$Gender=='2', ] #keep only male and female
+summary(new_df$Gender)
+
+new_df$Gender <- ifelse(new_df$Gender=='1', 0, 1) #male as baseline
+new_df$Gender <- as.factor(new_df$Gender)
+class(new_df$Gender)
+
+```
+
+```{r}
+first_language <- list()
+lang <- new_df$`First language`
+
+for(i in lang) {
+  if(i =='English'){
+    first_language <- append(first_language, '0')
+  } else if(i=='english'){
+    first_language <- append(first_language, '0')
+  } else if(str_detect(i, 'english')){
+    first_language <- append(first_language, '0')
+  } else if(str_detect(i, 'English')){
+    first_language <- append(first_language, '0')
+  } else{
+    first_language <- append(first_language, '1')
+  }
+}
+
+first_language<- as.factor(as.character(first_language))
+new_df <- new_df %>% mutate(first_language = first_language)
+class(new_df$first_language)
+summary(new_df$first_language)
+
+sum(str_detect(new_df$`First language`, 'english')) #10
+sum(str_detect(new_df$`First language`, 'English')) #205
+
+#dummy code first language 
+new_df$first_language <- ifelse(new_df$first_language=='0', 0,1)
+new_df$first_language<- as.factor(new_df$first_language)
+levels(new_df$first_language)
+
+#missing 'enlish' and 'engish'
+
+```
+
+```{r}
+#any transformations for years of education?
+#exclude the 5 ppts who had ambiguous response? if lavaan accepts analysis with missing numerical values then keep
+
+#dummy code diagnosis with neurological condition (1=yes, 2=no in the data - dummy code to 0=yes, 1=no)
+new_df <- new_df %>% mutate(neurological_condition=factor(`Have you been previously diagnosed with a neurological condition? - Selected Choice`))
+
+new_df$neuro_cond <- ifelse(new_df$neurological_condition=='1', 0,1)
+new_df$neuro_cond <- as.factor(new_df$neuro_cond)
+
+#dummy code diagnosis with mental health condition (1=yes, 2=no in data - dummy code to 0=yes, 1=no)
+new_df <- new_df %>% mutate(mental_health_condition = factor(`Have you been clinically diagnosed with a mental health condition? - Selected Choice`))
+
+new_df$mental_cond <- ifelse(new_df$mental_health_condition=='1', 0,1)
+new_df$mental_cond <- as.factor(new_df$mental_cond)
+
+```
+
+```{r}
+#reset unique ID number after deleting some ppts 
+new_df <- new_df[,-1]
+new_df <- dplyr::mutate(new_df, ID = row_number())
+new_df <- new_df %>% mutate(ID = factor(ID))
+new_df <- new_df %>%
+  relocate(ID)
+
+```
+
+```{r}
+#calculate anxiety score per ppt
+#anxiety_items <- new_df %>% group_by(ID) %>% select(122,124,127,129,135,139,140) #gives errors when grouping
+anxiety_items <- new_df %>% select(122,124,127,129,135,139,140)
+anxiety_items <- as.data.frame(lapply(anxiety_items, as.numeric))
+anxiety_items <- anxiety_items %>% mutate(anxiety_score=rowSums(.))
+
+#multiply sum by 2 
+anxiety_items <- anxiety_items*2
+
+#calculate depression score per ppt 
+depression_items <- new_df %>% select(123, 125, 130, 133, 136, 137, 141)
+depression_items <- as.data.frame(lapply(depression_items, as.numeric))
+depression_items <- depression_items %>% mutate(depression_score=rowSums(.))
+
+#multiply sum by 2
+depression_items <- depression_items*2
+
+#add into df 
+new_df <- cbind(new_df, anxiety_items$anxiety_score, depression_items$depression_score)
+#seems like it's preserving order for each ppt
+
+#need some descriptive stats for demographics 
+
+```
+
+```{r}
+#calculate average scores per ppt across pictures for each emotional dimension 
+#all SAM columns are class character, convert to class numeric 
+new_df[31:120] <- sapply(new_df[31:120],as.numeric)
+
+#valence scores
+new_df$avg_valence <- rowMeans(new_df[ , c(31,34,37,40,43,46,49,52,55,58,61,64,67,70,73,76,79,82,85,88,91,94,97,100,103,106,109,112,115,118)], na.rm=TRUE)
+
+#arousal scores
+new_df$avg_arousal <- rowMeans(new_df[ , c(32,35,38,41,44,47,50,53,56,59,62,65,68,71,74,77,80,83,86,89,92,95,98,101,104,107,110,113,116,119)], na.rm=TRUE)
+
+#dominance scores
+new_df$avg_dominance <- rowMeans(new_df[ , c(33,36,39,42,45,48,51,54,57,60,63,66,69,72,75,78,81,84,87,90,93,96,99,102,105,108,111,114,117,120)], na.rm=TRUE)
+```
+
+```{r}
+#remove redundant columns 
+new_df <- new_df %>% select(c(1:14,142:154))
+
+new_df <- new_df %>% rename(anxiety_score = `anxiety_items$anxiety_score`, depression_score = `depression_items$depression_score`, years_education = `Years of full-time education 
+(include all years starting from primary school up until and including university)`)
+```
+
+```{r}
+#make age numeric because it's character
+new_df$Age <- as.numeric(new_df$Age)
+class(new_df$Age)
+#check variables are within possible range but that would be before removing the redundant columns
+
+#convert years of education from character into numeric variable 
+new_df$years_education <- as.numeric(new_df$years_education)
+class(new_df$years_education)
+
+summary(is.na(new_df$years_education)) #the model excluded those 5 participants with NA values
+new_df <- na.omit(new_df)
+
+```
+
+# Descriptive Statistics 
+
+```{r}
+#descriptive stats of VVIQ scores 
+new_df %>% group_by(group) %>% summarise(vviq_mean = round(mean(vviq_score),2),
+                   vviq_sd = round(sd(vviq_score),2),
+                   min_vviq = min(vviq_score),
+                   max_vviq = max(vviq_score))
+
+#distribution of vviq scores in all ppts
+ggplot(new_df, aes(vviq_score)) +
+  geom_histogram(aes(y = ..density..), fill="lightblue") +
+  geom_density(alpha = 0.6, fill="grey") +
+  labs(title="Distribution of VVIQ Scores",x="VVIQ Scores", y = "Density")+
+  coord_cartesian(xlim = c(16, 80))
+
+#distribution of vviq scores by group
+new_df %>%
+  ggplot( aes(x=vviq_score, fill=group)) +
+    geom_histogram( color="#e9ecef", alpha=0.6, position = 'identity') +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+    labs(fill="", title= substitute(paste(italic("Distribution of VVIQ Scores by Group"))),x="VVIQ Scores", y = "Count")+
+  theme(text=element_text(size=17))+ 
+  coord_cartesian(xlim = c(16, 80))
+
+
+```
+
+
+
+```{r}
+new_df %>%
+  summarise(mean_anxiety = round(mean(anxiety_score),2),
+            mean_depression = round(mean(depression_score),2),
+            mean_valence = round(mean(avg_valence),2),
+            mean_arousal = round(mean(avg_arousal),2),
+            mean_dominance = round(mean(avg_dominance),2)
+            )
+```
+
+
+```{r}
+#exploring descriptives
+#contingency table of demographics summary 
+new_df %>%
+  group_by(group) %>%
+  summarize(count=n(),
+            `Mean Age` = round(mean(Age),2),
+            #Gender = nrow(Gender),
+            `Mean Education Years` = round(mean(years_education, na.rm=TRUE),2),
+            #Education level,
+            `First Language` = count(new_df,first_language),
+            `Neurological Condition` = count(new_df,neuro_cond),
+            `Mental Health Condition` = count(new_df,mental_cond)
+            ) %>% t() %>% kable() %>% kable_classic() 
+
+aggregate(cbind(Age, years_education) ~ group, data = new_df, mean)
+aggregate(cbind(Gender, first_language, neuro_cond, mental_cond)~group, data=new_df, sum) 
+
+#sjPlot::sjt.xtab(new_df$neuro_cond,new_df$group) 
+gen_dem <- new_df %>% 
+  group_by(group, Gender) %>%
+  summarise(Gender = length(Gender))
+
+mental_dem <- new_df %>% 
+  group_by(group, mental_cond) %>%
+  summarise(mental_health = length(mental_cond))
+
+neuro_dem <- new_df %>% 
+  group_by(group, neuro_cond) %>%
+  summarise(neurological_condition = length(neuro_cond))
+
+cbind(gen_dem,mental_dem, neuro_dem)
+
+tb1 <- new_df %>% count(group,Gender)
+tb2 <- new_df %>% count(group,neuro_cond)
+cbind(tb1, tb2)
+
+
+```
+
+```{r}
+#summary of neurological condition 
+new_df <- new_df %>% mutate(neuro_diagnosis = as.factor(`Have you been previously diagnosed with a neurological condition? - Yes (please specify if you feel comfortable sharing) - Text`))
+new_df %>% count(group, neuro_diagnosis) %>% kable() %>% kable_classic()
+
+#summary of mental health conditions
+new_df <- new_df %>% mutate(mental_health_diagnosis = as.character(`Have you been clinically diagnosed with a mental health condition? - Yes (please specify if you feel comfortable sharing) - Text`))
+new_df %>% count(group, mental_health_diagnosis ) %>% kable() %>% kable_classic()
+
+```
+
+
+```{r}
+#Testing normality of variables in the data  
+new_df %>%
+  group_by(condition) %>%
+  summarise(statistic_age = shapiro.test(Age)$statistic,
+            p.value_age = shapiro.test(Age)$p.value, 
+            statistic_edu = shapiro.test(years_education)$statistic,
+            p.value_edu = shapiro.test(years_education)$p.value
+            ) 
+
+#they are all significant and so violate normality - do non-parametric 
+# two sample Wilcoxon test (also known as the Mann-Whitney test) and not independent t-test because not normally distributed 
+#null=difference/distribution of two independent samples is the same; alternative=there is difference
+MWW_age <- wilcox.test(Age~condition, data=new_df, paired=FALSE, alternative="two.sided")
+#p-value<0.05 so we reject the null and conclude that the distribution of age between the two groups is different. The results indicate that [group] were significantly higher on age than [], W= , p<0.05. (if it's two sided do i need to see in which direction?)
+MWW_edu <- wilcox.test(years_education~condition, data=new_df, paired=FALSE, alternative="two.sided")
+#p-value=0.05 approaches significance but we fail to reject the null and conclude that the distribution of years of education is the not significantly different from zero/they are the same/there was no significant difference between aphantasics and phantasics on years of education.
+
+#Mean, Median and SD of Age and Years of education
+new_df %>% group_by(condition) %>% summarise(
+  mean_age = round(mean(Age),2), 
+  median_age = median(Age),
+  sd_age = round(sd(Age),2),
+  mean_edu.yrs = round(mean(years_education),2),
+  median_edu.yrs = median(years_education),
+  sd_edu.yrs = round(sd(years_education))
+)
+
+#checking mean age aphantasics reported realised their aphantasia
+age_aphantasia <- as.numeric(as.character(new_df$`At what age did you realise having difficulties with visual mental imagery?`))
+age_aphantasia <- age_aphantasia %>% na.omit()
+age_aphantasia <- as.data.frame(age_aphantasia)
+age_aphantasia %>% summarise(mean_age_aphantasia = round(mean(age_aphantasia),2))
+```
+
+#Fisher test interpretation:
+Null (H0): There is no association between group and y. They are independent.
+Alternative (H1): A relationship between group and y exists in the population.
+When your p-value is below your significance level (e.g., 0.05), reject the null hypothesis. The sample data is strong enough to conclude that a relationship between the categorical variables exists in the population. Knowing the value of one variable provides information about the value of the other variable.
+  
+  
+#Chi-squared test interpretation
+a p-value that is less than or equal to your significance level indicates there is sufficient evidence to conclude that the observed distribution is not the same as the expected distribution. You can conclude that a relationship exists between the categorical variables.
+```{r}
+#Testing independence for nominal/categorical variables using Chi-square test 
+#start by creating contingency table - gender~group
+table(new_df$condition, new_df$Gender) %>% chisq.test()
+
+#Neurological condition ~ group
+table(new_df$condition, new_df$neuro_cond) %>% chisq.test() #non-significant p-value
+
+#Mental health condition ~ group
+table(new_df$condition, new_df$mental_cond) %>% chisq.test() #significant p-value
+
+#First language ~ group 
+table(new_df$condition, new_df$first_language) %>% chisq.test() #significant p-value
+
+
+#highest education level ~ group 
+  #factor first
+new_df <- new_df %>% mutate(education_level = as.factor(`Highest level of qualified education you have completed`))
+table(new_df$condition, new_df$education_level) %>% chisq.test() 
+#significant p-value = there's overall difference
+#post-hoc contrast analysis to determine where the effect is coming from 
+
+levels(new_df$education_level)
+
+#Level 1 vs. 2 = significant 
+edu_1_vs_2 <- new_df[new_df$education_level %in% c("1", "2"), ] 
+table(edu_1_vs_2$condition, edu_1_vs_2$education_level) %>% fisher.test() #chi-squared doesn't work; fisher's test
+
+#Level 1 vs. 3 = non-significant 
+edu_1_vs_3 <- new_df[new_df$education_level %in% c("1", "3"), ] 
+table(edu_1_vs_3$condition, edu_1_vs_3$education_level) %>% fisher.test()
+
+#Level 1 vs. 4 = non-significant 
+edu_1_vs_4 <- new_df[new_df$education_level %in% c("1", "4"), ] 
+table(edu_1_vs_4$condition, edu_1_vs_4$education_level) %>% fisher.test()
+
+#Level 1 vs. 5 = non-significant
+edu_1_vs_5 <- new_df[new_df$education_level %in% c("1", "5"), ] 
+table(edu_1_vs_5$condition, edu_1_vs_5$education_level) %>% fisher.test()
+
+#Level 1 vs. 6 = non-significant 
+edu_1_vs_6 <- new_df[new_df$education_level %in% c("1", "6"), ] 
+table(edu_1_vs_6$condition, edu_1_vs_6$education_level) %>% fisher.test()
+
+#Level 2 vs. 3 = non-significant but approaches significance
+edu_2_vs_3 <- new_df[new_df$education_level %in% c("2", "3"), ] 
+table(edu_2_vs_3$condition, edu_2_vs_3$education_level) %>% fisher.test()
+
+#Level 2 vs. 4 = significant 
+edu_2_vs_4 <- new_df[new_df$education_level %in% c("2", "4"), ] 
+table(edu_2_vs_4$condition, edu_2_vs_4$education_level) %>% fisher.test()
+
+#Level 2 vs. 5 =  significant 
+edu_2_vs_5 <- new_df[new_df$education_level %in% c("2", "5"), ] 
+table(edu_2_vs_5$condition, edu_2_vs_5$education_level) %>% fisher.test()
+
+#Level 2 vs. 6 = non-significant 
+edu_2_vs_6 <- new_df[new_df$education_level %in% c("2", "6"), ] 
+table(edu_2_vs_6$condition, edu_2_vs_6$education_level) %>% fisher.test()
+
+#Level 3 vs. 4 = non-significant 
+edu_3_vs_4 <- new_df[new_df$education_level %in% c("3", "4"), ] 
+table(edu_3_vs_4$condition, edu_3_vs_4$education_level) %>% fisher.test()
+
+#Level 3 vs. 5 = non-significant 
+edu_3_vs_5 <- new_df[new_df$education_level %in% c("3", "5"), ] 
+table(edu_3_vs_5$condition, edu_3_vs_5$education_level) %>% fisher.test()
+
+#Level 3 vs. 6 = non-significant 
+edu_3_vs_6 <- new_df[new_df$education_level %in% c("3", "6"), ] 
+table(edu_3_vs_6$condition, edu_3_vs_6$education_level) %>% fisher.test()
+
+#Level 4 vs. 5 = non-significant 
+edu_4_vs_5 <- new_df[new_df$education_level %in% c("4", "5"), ] 
+table(edu_4_vs_5$condition, edu_4_vs_5$education_level) %>% fisher.test()
+
+#Level 4 vs. 6 = non-significant 
+edu_4_vs_6 <- new_df[new_df$education_level %in% c("4", "6"), ] 
+table(edu_4_vs_6$condition, edu_4_vs_6$education_level) %>% fisher.test()
+
+#Level 5 vs. 6 - non-signifcant 
+edu_5_vs_6 <- new_df[new_df$education_level %in% c("5", "6"), ] 
+table(edu_5_vs_6$condition, edu_5_vs_6$education_level) %>% fisher.test()
+
+
+#summary highest education level by group
+table(new_df$condition, new_df$education_level)
+```
+
+
+```{r}
+#Descriptive statistics for emotional processing by group 
+
+#Testing normality of variables in the data before choosing test of independence 
+new_df %>%
+  group_by(group) %>%
+  summarise(statistic_valence = round(shapiro.test(avg_valence)$statistic,2),
+            p.value_valence = round(shapiro.test(avg_valence)$p.value,2),
+            statistic_arousal = round(shapiro.test(avg_arousal)$statistic,2),
+            p.value_arousal= round(shapiro.test(avg_arousal)$p.value,2),
+            statistic_dominance = round(shapiro.test(avg_dominance)$statistic,2),
+            p.value_dominance = round(shapiro.test(avg_dominance)$p.value,2)
+            ) 
+
+#they're all significant and so non-normal distribution except for phantasics' valence scores normal (p=0.8) but it's by group and at least one was significant (not normally distributed) 
+  #Do non-parametric Mann-Whitney test 
+  #null=difference/distribution of two independent samples is the same; alternative=there is difference
+MWW_valence <- wilcox.test(avg_valence~group, data=new_df, paired=FALSE, alternative="two.sided") #no-sig
+MWW_arousal <- wilcox.test(avg_arousal~group, data=new_df, paired=FALSE, alternative="two.sided") #sig
+MWW_dominance <- wilcox.test(avg_dominance~group, data=new_df, paired=FALSE, alternative="two.sided") #non-sig
+
+MWW_valence$statistic
+round(MWW_valence$p.value,2)
+MWW_arousal$statistic
+MWW_arousal$p.value
+MWW_dominance$statistic
+round(MWW_dominance$p.value,2)
+
+#Descriptives of emotional dimensions by group
+new_df %>% group_by(group) %>% summarise(
+  mean_valence = round(mean(avg_valence),2),
+  sd_valence = round(sd(avg_valence),2),
+  median_valence = round(median(avg_valence),2),
+  min_valence = min(avg_valence),
+  max_valence = max(avg_valence),
+  mean_arousal = round(mean(avg_arousal),2),
+  sd_arousal = round(sd(avg_arousal),2),
+  median_arousal = round(median(avg_arousal),2),
+  min_arousal = min(avg_arousal),
+  max_arousal = max(avg_arousal),
+  mean_dominance = round(mean(avg_dominance),2),
+  sd_dominance = round(sd(avg_dominance),2),
+  median_dominance = round(median(avg_dominance),2),
+  min_dominance = min(avg_dominance),
+  max_dominance = max(avg_dominance)
+) 
+
+
+```
+
+```{r}
+#Mental Health scores by group 
+
+  #Testing normality of variables in the data before choosing test of independence 
+new_df %>%
+  group_by(group) %>%
+  summarise(statistic_depression = round(shapiro.test(depression_score)$statistic,2),
+            p.value_depression = round(shapiro.test(depression_score)$p.value,2),
+            statistic_anxiety = round(shapiro.test(anxiety_score)$statistic,2),
+            p.value_anxiety= round(shapiro.test(anxiety_score)$p.value,2)
+            ) 
+
+#they're all significant and so non-normal distribution 
+  #Do non-parametric Mann-Whitney test 
+  #null=difference/distribution of two independent samples is the same; alternative=there is difference
+MWW_depression <- wilcox.test(depression_score~group, data=new_df, paired=FALSE, alternative="two.sided") #non-sig
+MWW_anxiety <- wilcox.test(anxiety_score~group, data=new_df, paired=FALSE, alternative="two.sided") #non-sig
+
+MWW_depression$statistic
+MWW_depression$p.value
+MWW_anxiety$statistic
+MWW_anxiety$p.value
+
+#Descriptive stats
+new_df %>% group_by(group) %>% summarise(
+  mean_depression = round(mean(depression_score),2),
+  sd_depression = round(sd(depression_score),2),
+  median_depression = round(median(depression_score),2),
+  min_depression = min(depression_score),
+  max_depression = max(depression_score),
+  mean_anxiety = round(mean(anxiety_score),2),
+  sd_anxiety = round(sd(anxiety_score),2),
+  median_anxiety = round(median(anxiety_score),2),
+  min_anxiety = min(anxiety_score),
+  max_anxiety = max(anxiety_score)
+) 
+
+
+```
+
+
+# Main Analyses
+##Fitting path mediation models 
+
+```{r}
+#Model 1 - valence x depression 
+
+mdl_1 <- '
+avg_valence ~ a*condition + Age + Gender + first_language + years_education + neuro_cond 
+depression_score ~ c*condition + b*avg_valence + Age + Gender + first_language + years_education + neuro_cond
+ind:=a*b
+dir:=c
+total:= ind+dir
+'
+
+mdl_est_1 <- sem(mdl_1, data=new_df, se="bootstrap")
+summary(mdl_est_1, ci=TRUE, fit.measures=T, standardized=TRUE)
+
+#semPaths(mdl_est_1, what="what")
+
+#Putting model results into table
+standardizedSolution(mdl_est_1, ci=TRUE) %>% kable(caption="Path Mediation Model Results with the 95% Confidence Intervals",digits=2) %>% kable_paper()
+
+
+
+
+```
+
+
+
+```{r}
+#model 2 - arousal x depression 
+mdl_2 <- '
+avg_arousal ~ a*condition + Age + Gender + first_language + years_education + neuro_cond 
+depression_score ~ c*condition + b*avg_arousal + Age + Gender + first_language + years_education + neuro_cond 
+
+ind:=a*b
+dir:=c
+total:= ind+dir
+'
+
+mdl_est_2 <- sem(mdl_2, data=new_df, se="bootstrap")
+summary(mdl_est_2, ci=TRUE, fit.measures=T, std=TRUE)
+
+semPaths(mdl_est_2, what="path")
+
+standardizedSolution(mdl_est_2, ci=TRUE) %>% kable(caption="Path Mediation Model Results with the 95% Confidence Intervals",digits=2) %>% kable_paper()
+
+```
+
+
+```{r}
+#model 3 - dominance x depression 
+mdl_3 <- '
+avg_dominance ~ a*condition + Age + Gender + first_language + years_education + neuro_cond 
+depression_score ~ c*condition + b*avg_dominance + Age + Gender + first_language + years_education + neuro_cond 
+
+ind:=a*b
+dir:=c
+total:= ind+dir
+'
+
+mdl_est_3 <- sem(mdl_3, data=new_df, se="bootstrap")
+summary(mdl_est_3, ci=TRUE, fit.measures=T, std=TRUE)
+standardizedSolution(mdl_est_3, ci=TRUE) %>% kable(caption="Path Mediation Model Results with the 95% Confidence Intervals",digits=2) %>% kable_paper()
+
+#graph
+#semPaths(mdl_est_3, what="path")
+```
+
+
+```{r}
+#model 4 - valence x anxiety 
+mdl_4 <- '
+avg_valence ~ a*condition + Age + Gender + first_language + years_education + neuro_cond
+anxiety_score ~ c*condition + b*avg_valence + Age + Gender + first_language + years_education + neuro_cond
+
+ind:=a*b
+dir:=c
+total:= ind+dir
+'
+
+mdl_est_4 <- sem(mdl_4, data=new_df, se="bootstrap")
+summary(mdl_est_4, ci=TRUE, fit.measures=T, std=TRUE)
+standardizedSolution(mdl_est_4, ci=TRUE) %>% kable(caption="Path Mediation Model Results with the 95% Confidence Intervals",digits=2) %>% kable_paper()
+
+#graph
+#semPaths(mdl_est_4, what="path")
+```
+
+```{r}
+#model 5 - arousal x anxiety 
+mdl_5 <- '
+avg_arousal ~ a*condition + Age + Gender + first_language + years_education + neuro_cond 
+anxiety_score ~ c*condition + b*avg_arousal + Age + Gender + first_language + years_education + neuro_cond 
+
+ind:=a*b
+dir:=c
+total:= ind+dir
+'
+
+mdl_est_5 <- sem(mdl_5, data=new_df, se="bootstrap")
+summary(mdl_est_5, ci=TRUE, fit.measures=T, std=TRUE)
+standardizedSolution(mdl_est_5, ci=TRUE) %>% kable(caption="Path Mediation Model Results with the 95% Confidence Intervals",digits=2) %>% kable_paper()
+
+#graph
+#semPaths(mdl_est_5, what="path")
+```
+
+```{r}
+#model 6 - dominance x anxiety 
+mdl_6 <- '
+avg_dominance ~ a*condition + Age + Gender + first_language + years_education + neuro_cond  
+anxiety_score ~ c*condition + b*avg_dominance + Age + Gender + first_language + years_education + neuro_cond 
+
+ind:=a*b
+dir:=c
+total:= ind+dir
+'
+
+mdl_est_6 <- sem(mdl_6, data=new_df, se="bootstrap")
+summary(mdl_est_6, ci=TRUE, fit.measures=T, std=TRUE)
+standardizedSolution(mdl_est_6, ci=TRUE) %>% kable(caption="Path Mediation Model Results with the 95% Confidence Intervals",digits=2) %>% kable_paper()
+
+#graph
+#semPaths(mdl_est_6, what="path")
+```
+
+
+## Model Assumptions
+```{r}
+pairs.panels(new_df %>% select(Age, years_education, avg_valence, avg_arousal, avg_dominance, depression_score, anxiety_score))
+#this is on the data rather than the model, bootstrap takes care of potential violation of linearity 
+
+
+```
+
+```{r}
+#fitting separate regression models to test assumptions 
+#lm(y~m+x) 
+#lm(m~x) 
+#model 1: 
+mdl1_path1 <- lm(avg_valence~condition, data=new_df)
+mdl1_path2 <- lm(depression_score~condition+avg_valence,data=new_df)
+
+#model 2:
+mdl2_path1 <- lm(avg_arousal~condition, data=new_df)
+mdl2_path2 <- lm(depression_score~condition+avg_arousal, data=new_df)
+
+#model 3:
+mdl3_path1 <- lm(avg_dominance~condition, data=new_df)
+mdl3_path2 <- lm(depression_score~condition+avg_dominance,data=new_df)
+
+#model 4:
+mdl4_path2 <- lm(anxiety_score~condition+avg_valence, data=new_df)
+
+#model 5:
+mdl5_path2 <- lm(anxiety_score~condition+avg_arousal, data=new_df)
+
+#model 6:
+mdl6_path2 <- lm(anxiety_score~condition+avg_dominance, data=new_df)
+```
+
+```{r}
+#model 1 path 1
+plot(mdl1_path1)
+
+#model 1 path 2
+plot(mdl1_path2) 
+
+
+
+```
+
+```{r}
+new_df[new_df$ID==189,]
+```
+
+```{r}
+#model 2 path 1
+plot(mdl2_path1)
+
+#model 2 path 2
+plot(mdl2_path2)
+```
+
+
+```{r}
+#model 3 path 1
+plot(mdl3_path1)
+
+#model 3 path 2
+plot(mdl3_path2)
+```
+
+```{r}
+
+#model 4 path 2
+plot(mdl4_path2)
+```
+
+```{r}
+#model 5 path 2
+plot(mdl5_path2)
+
+```
+
+```{r}
+
+#model 6 path 2
+plot(mdl6_path2)
+
+```
+
+
+```{r}
+#Plotting Mental Health Scores by Group
+#Depression scores by group 
+plt1 <- ggplot(data=new_df, aes(x = group, y = depression_score, fill=group)) +
+    stat_boxplot(geom = "errorbar", width=0.1) + 
+  geom_boxplot(outlier.colour = "#566573",outlier.size = 2, alpha=.3, fatten=.25)+
+  geom_point(data=new_df, aes(y=depression_score, colour=group), alpha=0.3, position=position_jitterdodge(), show.legend=FALSE)+
+  stat_summary(fun="mean", shape=1, size=0.5, show.legend=FALSE) +
+  labs(title="Depression Scores by Group", x="Group", y="Depression Scores", fill="")+
+  scale_x_discrete(limits=c("aphantasia","phantasia"),labels=c("aphantasia"="Aphantasia","phantasia"="Phantasia"))+
+  theme_classic()+theme(text=element_text(size=15))+
+  theme(legend.position="bottom")
+
+#Anxiety scores by group 
+plt2<- ggplot(data=new_df, aes(x = group, y = anxiety_score, fill=group)) +
+    stat_boxplot(geom = "errorbar", width=0.1) + 
+  geom_boxplot(outlier.colour = "#566573",outlier.size = 2, alpha=.3, fatten=.25)+
+  geom_point(data=new_df, aes(y=anxiety_score, colour=group), alpha=0.3, position=position_jitterdodge(), show.legend=FALSE)+
+  stat_summary(fun="mean", shape=1, size=0.5, show.legend=FALSE) +
+  labs(title="Anxiety Scores by Group", x="Group", y="Anxiety Scores", fill="")+
+  scale_x_discrete(limits=c("aphantasia","phantasia"),labels=c("aphantasia"="Aphantasia","phantasia"="Phantasia"))+
+  theme_classic()+theme(text=element_text(size=15))+
+  theme(legend.position="bottom")
+
+cowplot::plot_grid(plt1, plt2, labels = c('A', 'B'), label_size = 12)
+
+```
+
+
+```{r}
+#Plotting Emotional Dimensions by Group
+#Used group variable here but it's the same with condition variable (dummy coded version)
+#although group variable has hyperphantasia as third level, because all data-points were removed it doesn't matter which variable we use, mean points and distribution is the same
+
+#Average valence scores by group 
+p1<- ggplot(data=new_df, aes(x = group, y = avg_valence, fill=group)) +
+    stat_boxplot(geom = "errorbar", width=0.1) + 
+  geom_boxplot(outlier.colour = "#566573",outlier.size = 2, alpha=.3, fatten=.25)+
+  geom_point(data=new_df, aes(y=avg_valence, colour=group), alpha=0.3, position=position_jitterdodge(), show.legend=FALSE)+
+  stat_summary(fun="mean", shape=1, size=0.5, show.legend=FALSE) +
+  labs(title="Mean Valence Scores by Group", x="Group", y="Valence Score", fill="")+
+  scale_x_discrete(limits=c("aphantasia","phantasia"),labels=c("aphantasia"="Aphantasia","phantasia"="Phantasia"))+
+  theme_classic()+theme(text=element_text(size=15))+
+  theme(legend.position="bottom")
+
+
+#Average arousal scores by group 
+p2<- ggplot(data=new_df, aes(x = group, y = avg_arousal, fill=group)) +
+    stat_boxplot(geom = "errorbar", width=0.1) + 
+  geom_boxplot(outlier.colour = "#566573",outlier.size = 2, alpha=.3, fatten=.25)+
+  geom_point(data=new_df, aes(y=avg_arousal, colour=group), alpha=0.3, position=position_jitterdodge(), show.legend=FALSE)+
+  stat_summary(fun="mean", shape=1, size=0.5, show.legend=FALSE) +
+  labs(title="Mean Arousal Scores by Group", x="Group", y="Arousal Score", fill="")+
+  scale_x_discrete(limits=c("aphantasia","phantasia"),labels=c("aphantasia"="Aphantasia","phantasia"="Phantasia"))+
+  theme_classic()+theme(text=element_text(size=15)) +
+  theme(legend.position="bottom")
+
+
+#Average dominance scores by group 
+p3<- ggplot(data=new_df, aes(x = group, y = avg_dominance, fill=group)) +
+    stat_boxplot(geom = "errorbar", width=0.1) + 
+  geom_boxplot(outlier.colour = "#566573",outlier.size = 2, alpha=.3, fatten=.25)+
+  geom_point(data=new_df, aes(y=avg_dominance, colour=group), alpha=0.3, position=position_jitterdodge(), show.legend=FALSE)+
+  stat_summary(fun="mean", shape=1, size=0.5, show.legend=FALSE) +
+  labs(title="Mean Dominance Scores by Group", x="Group", y="Dominance Score", fill="")+
+  scale_x_discrete(limits=c("aphantasia","phantasia"),labels=c("aphantasia"="Aphantasia","phantasia"="Phantasia"))+
+  theme_classic()+theme(text=element_text(size=15))+ 
+  theme(legend.position="bottom")
+
+cowplot::plot_grid(p1, p2, p3, labels = c('A', 'B', 'C'), label_size = 12)
+```
+
+
+
+
